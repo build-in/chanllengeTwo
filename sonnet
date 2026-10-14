@@ -1,0 +1,139 @@
+"""按字素簇（用户感知的字符）反转字符串，仅依赖标准库。"""
+
+import unicodedata
+
+_ZWJ = 0x200D
+_EXT_PICT = (
+    (0x00A9, 0x00A9), (0x00AE, 0x00AE), (0x203C, 0x203C), (0x2049, 0x2049),
+    (0x2122, 0x2122), (0x2139, 0x2139), (0x2194, 0x21AA), (0x231A, 0x23FF),
+    (0x24C2, 0x24C2), (0x25AA, 0x25FE), (0x2600, 0x27BF), (0x2934, 0x2935),
+    (0x2B05, 0x2B55), (0x3030, 0x3030), (0x303D, 0x303D), (0x3297, 0x3299),
+    (0x1F000, 0x1F1E5), (0x1F200, 0x1FAFF),  # 排除区域指示符 1F1E6-1F1FF
+)
+
+
+def _in(cp, ranges):
+    return any(lo <= cp <= hi for lo, hi in ranges)
+
+
+def _kind(ch):
+    """给字符分类（近似 UAX #29 的 Grapheme_Cluster_Break 属性）。"""
+    cp = ord(ch)
+    if cp == 0x0D:
+        return "CR"
+    if cp == 0x0A:
+        return "LF"
+    if cp == _ZWJ:
+        return "ZWJ"
+    if 0x1F1E6 <= cp <= 0x1F1FF:
+        return "RI"
+    cat = unicodedata.category(ch)
+    if (cat in ("Mn", "Me") or cp == 0x200C or 0x1F3FB <= cp <= 0x1F3FF
+            or 0xE0020 <= cp <= 0xE007F or 0xFE00 <= cp <= 0xFE0F):
+        return "Extend"
+    if cat == "Mc":
+        return "Spacing"
+    if cat in ("Cc", "Zl", "Zp", "Cf"):
+        return "Control"
+    if _in(cp, _EXT_PICT):
+        return "Pict"
+    if 0x1100 <= cp <= 0x115F or 0xA960 <= cp <= 0xA97C:
+        return "L"
+    if 0x1160 <= cp <= 0x11A7 or 0xD7B0 <= cp <= 0xD7C6:
+        return "V"
+    if 0x11A8 <= cp <= 0x11FF or 0xD7CB <= cp <= 0xD7FB:
+        return "T"
+    if 0xAC00 <= cp <= 0xD7A3:
+        return "LV" if (cp - 0xAC00) % 28 == 0 else "LVT"
+    return "Other"
+
+
+def _clusters(s):
+    """把字符串切成字素簇列表。"""
+    out = []
+    cur = ""
+    prev = None       # 上一个字符的类别
+    ri_count = 0      # 当前簇中连续的区域指示符数
+    emoji_seq = False  # 当前处于 Pict Extend* 之后（可被 ZWJ 连接）
+    after_zwj = False  # 上一个字符是 emoji 序列里的 ZWJ
+    for ch in s:
+        k = _kind(ch)
+        if prev is None:
+            join = False
+        elif prev == "CR" and k == "LF":
+            join = True
+        elif prev in ("CR", "LF", "Control") or k in ("CR", "LF", "Control"):
+            join = False
+        elif prev == "L" and k in ("L", "V", "LV", "LVT"):
+            join = True
+        elif prev in ("LV", "V") and k in ("V", "T"):
+            join = True
+        elif prev in ("LVT", "T") and k == "T":
+            join = True
+        elif k in ("Extend", "ZWJ", "Spacing"):
+            join = True
+        elif after_zwj and k == "Pict":
+            join = True
+        elif prev == "RI" and k == "RI" and ri_count % 2 == 1:
+            join = True
+        else:
+            join = False
+
+        if not join:
+            out.append(cur)
+            cur = ""
+            ri_count = 0
+            emoji_seq = False
+        cur += ch
+
+        after_zwj = k == "ZWJ" and emoji_seq
+        if k == "Pict":
+            emoji_seq = True
+        elif k not in ("Extend", "ZWJ"):
+            emoji_seq = False
+        ri_count = ri_count + 1 if k == "RI" else 0
+        prev = k
+    if cur:
+        out.append(cur)
+    return [c for c in out if c]
+
+
+def reverse_string(s: str) -> str:
+    """按字素簇（用户感知的字符）反转字符串。
+
+    组合 emoji（ZWJ 序列）、肤色修饰、国旗（区域指示符成对）、
+    组合附加符号（如 "e\\u0301"）、CRLF 与韩文音节都作为整体保留顺序。
+    """
+    return "".join(reversed(_clusters(s)))
+
+
+if __name__ == "__main__":
+    cases = [
+        ("", ""),
+        ("a", "a"),
+        ("abc", "cba"),
+        ("你好，世界", "界世，好你"),
+        ("a👨‍👩‍👧b", "b👨‍👩‍👧a"),
+        ("👍🏽x👍🏿", "👍🏿x👍🏽"),
+        ("🇨🇳🇺🇸a", "a🇺🇸🇨🇳"),
+        ("🇨🇳🇺🇸🇯", "🇯🇺🇸🇨🇳"),
+        ("ae\u0301b", "be\u0301a"),
+        ("e\u0301\u0302x", "xe\u0301\u0302"),
+        ("a\r\nb", "b\r\na"),
+        ("한국어", "어국한"),
+        ("\u1112\u1161\u11ABx", "x\u1112\u1161\u11AB"),
+        ("🏳️‍🌈a❤️", "❤️a🏳️‍🌈"),
+        ("a😀👨🏻‍💻b", "b👨🏻‍💻😀a"),
+    ]
+    ok = True
+    for src, exp in cases:
+        got = reverse_string(src)
+        if got != exp:
+            ok = False
+            print("FAIL", src.encode("unicode_escape"), got.encode("unicode_escape"),
+                  exp.encode("unicode_escape"))
+    for src, _ in cases:
+        if src == "🇨🇳🇺🇸🇯":  # 奇数个区域指示符：反转后会重新配对，不满足对合
+            continue
+        assert reverse_string(reverse_string(src)) == src, src
+    print("ALL PASS" if ok else "SOME FAILED")
