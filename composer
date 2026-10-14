@@ -1,0 +1,130 @@
+"""按 Unicode 字素簇（extended grapheme cluster）反转字符串。"""
+
+from __future__ import annotations
+
+import unicodedata
+
+
+def _is_extended_pictographic(codepoint: int) -> bool:
+    if 0x1F300 <= codepoint <= 0x1FAFF:
+        return True
+    if 0x2600 <= codepoint <= 0x27BF:
+        return True
+    if 0x1F000 <= codepoint <= 0x1F02F or 0x1F0A0 <= codepoint <= 0x1F0FF:
+        return True
+    return codepoint in (
+        0x231A, 0x231B, 0x2328, 0x23CF, 0x23E9, 0x23EA, 0x23EB, 0x23EC,
+        0x23ED, 0x23EE, 0x23EF, 0x23F0, 0x23F1, 0x23F2, 0x23F3, 0x23F8,
+        0x23F9, 0x23FA,
+    )
+
+
+def _gcb(codepoint: int) -> str:
+    """Grapheme_Cluster_Break 属性（Unicode TR29，覆盖常用文本与 emoji）。"""
+    if codepoint == 0x0D:
+        return "CR"
+    if codepoint == 0x0A:
+        return "LF"
+    if codepoint in (0x0600, 0x0601, 0x0602, 0x0603, 0x06DD, 0x070F, 0x0890, 0x0891, 0x08E2):
+        return "Prepend"
+    if 0x1100 <= codepoint <= 0x115F or codepoint in (0x2329, 0x232A):
+        return "L"
+    if 0x1160 <= codepoint <= 0x11A7 or 0x302E <= codepoint <= 0x302F:
+        return "V"
+    if 0x11A8 <= codepoint <= 0x11FF or 0x302B <= codepoint <= 0x302D:
+        return "T"
+    if 0xAC00 <= codepoint <= 0xD7A3:
+        return "LV"
+    if 0xD7B0 <= codepoint <= 0xD7C6:
+        return "LVT"
+    if 0x1F1E6 <= codepoint <= 0x1F1FF:
+        return "Regional_Indicator"
+    if codepoint == 0x200D:
+        return "ZWJ"
+    if (
+        0x1F3FB <= codepoint <= 0x1F3FF
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xE0100 <= codepoint <= 0xE01EF
+        or 0x20D0 <= codepoint <= 0x20F0
+    ):
+        return "Extend"
+    cat = unicodedata.category(chr(codepoint))
+    if cat in ("Mn", "Me"):
+        return "Extend"
+    if cat == "Mc":
+        return "SpacingMark"
+    if cat == "Cc" or (0x0 <= codepoint <= 0x1F) or (0x7F <= codepoint <= 0x9F):
+        return "Control"
+    if _is_extended_pictographic(codepoint):
+        return "Extended_Pictographic"
+    return "Other"
+
+
+def _grapheme_break(prev: str, curr: str, ri_count: int) -> tuple[bool, int]:
+    """在 prev 与 curr 两个码点之间是否断开字素簇。"""
+    lcp, rcp = ord(prev), ord(curr)
+    lg, rg = _gcb(lcp), _gcb(rcp)
+
+    if lg == "CR" and rg == "LF":
+        return False, 0
+    if lg in ("Control", "CR", "LF") or rg in ("Control", "CR", "LF"):
+        return True, 0
+    if rg in ("Extend", "SpacingMark"):
+        return False, 0
+    if lg == "Prepend":
+        return False, 0
+    if lg in ("L", "LV", "LVT") and rg in ("L", "V", "LV", "LVT"):
+        return False, 0
+    if lg in ("LV", "V") and rg in ("V", "T"):
+        return False, 0
+    if lg in ("LVT", "T") and rg == "T":
+        return False, 0
+    if lg == "Regional_Indicator" and rg == "Regional_Indicator":
+        if ri_count % 2 == 1:
+            return False, ri_count + 1
+        return True, 1
+    if lg == "Regional_Indicator":
+        return True, 1
+    # GB11: Extended_Pictographic Extend* ZWJ × Extended_Pictographic
+    if lg == "ZWJ" and _is_extended_pictographic(rcp):
+        return False, 0
+    if _is_extended_pictographic(lcp) and rg in ("Extend", "ZWJ"):
+        return False, 0
+    if lg == "Extend" and _is_extended_pictographic(rcp):
+        return False, 0
+    return True, 0
+
+
+def _iter_graphemes(text: str):
+    if not text:
+        return
+    start = 0
+    ri_count = 1 if _gcb(ord(text[0])) == "Regional_Indicator" else 0
+    for index in range(1, len(text)):
+        break_here, ri_count = _grapheme_break(text[index - 1], text[index], ri_count)
+        if break_here:
+            yield text[start:index]
+            start = index
+            ri_count = 1 if _gcb(ord(text[index])) == "Regional_Indicator" else 0
+    yield text[start:]
+
+
+def reverse_string(s: str) -> str:
+    """按用户感知的字素簇（extended grapheme cluster）反转字符串。"""
+    return "".join(reversed(list(_iter_graphemes(s))))
+
+
+if __name__ == "__main__":
+    def _assert(inp: str, expected: str) -> None:
+        assert reverse_string(inp) == expected, (inp, reverse_string(inp), expected)
+
+    _assert("abc", "cba")
+    _assert("你好世界", "界世好你")
+    e_acute = "e\u0301"
+    _assert("a" + e_acute + "b", "b" + e_acute + "a")
+    family = "\U0001F468\u200D\U0001F469\u200D\U0001F467"
+    _assert("abc" + family, family + "cba")
+    _assert("\U0001F1E8\U0001F1F3好", "好\U0001F1E8\U0001F1F3")
+    thumbs = "\U0001F44D\U0001F3FB"
+    _assert("a" + thumbs + "b", "b" + thumbs + "a")
+    print("ok")
