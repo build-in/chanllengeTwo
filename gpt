@@ -1,0 +1,89 @@
+"""Unicode-aware string reversal."""
+
+from __future__ import annotations
+
+import unicodedata
+
+
+_ZWJ = "\u200d"
+
+
+def _is_regional_indicator(char: str) -> bool:
+    return "\U0001f1e6" <= char <= "\U0001f1ff"
+
+
+def _is_extend(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        unicodedata.category(char).startswith("M")
+        or char == "\u200c"  # ZERO WIDTH NON-JOINER
+        or 0xFE00 <= codepoint <= 0xFE0F  # variation selectors
+        or 0xE0100 <= codepoint <= 0xE01EF
+        or 0x1F3FB <= codepoint <= 0x1F3FF  # emoji skin tones
+        or 0xE0020 <= codepoint <= 0xE007F  # emoji tag sequences
+    )
+
+
+def _hangul_type(char: str) -> str | None:
+    codepoint = ord(char)
+    if 0x1100 <= codepoint <= 0x115F or 0xA960 <= codepoint <= 0xA97C:
+        return "L"
+    if 0x1160 <= codepoint <= 0x11A7 or 0xD7B0 <= codepoint <= 0xD7C6:
+        return "V"
+    if 0x11A8 <= codepoint <= 0x11FF or 0xD7CB <= codepoint <= 0xD7FB:
+        return "T"
+    if 0xAC00 <= codepoint <= 0xD7A3:
+        return "LV" if (codepoint - 0xAC00) % 28 == 0 else "LVT"
+    return None
+
+
+def _hangul_continues(previous: str, current: str) -> bool:
+    previous_type = _hangul_type(previous)
+    current_type = _hangul_type(current)
+    return (
+        previous_type == "L" and current_type in {"L", "V", "LV", "LVT"}
+    ) or (
+        previous_type in {"LV", "V"} and current_type in {"V", "T"}
+    ) or (
+        previous_type in {"LVT", "T"} and current_type == "T"
+    )
+
+
+def _grapheme_clusters(text: str) -> list[str]:
+    clusters: list[str] = []
+    regional_count = 0
+
+    for char in text:
+        if not clusters:
+            clusters.append(char)
+            regional_count = int(_is_regional_indicator(char))
+            continue
+
+        previous = clusters[-1][-1]
+        joins_previous = (
+            (previous == "\r" and char == "\n")
+            or _is_extend(char)
+            or char == _ZWJ
+            or previous == _ZWJ
+            or _hangul_continues(previous, char)
+            or (
+                _is_regional_indicator(char)
+                and _is_regional_indicator(previous)
+                and regional_count % 2 == 1
+            )
+        )
+
+        if joins_previous:
+            clusters[-1] += char
+            if _is_regional_indicator(char):
+                regional_count += 1
+        else:
+            clusters.append(char)
+            regional_count = int(_is_regional_indicator(char))
+
+    return clusters
+
+
+def reverse_string(s: str) -> str:
+    """Reverse *s* by user-perceived characters (Unicode grapheme clusters)."""
+    return "".join(reversed(_grapheme_clusters(s)))
