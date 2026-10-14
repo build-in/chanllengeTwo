@@ -1,0 +1,61 @@
+"""统一裁判：对三个模型的 reverse_string 跑相同用例 + 性能测试。"""
+import importlib.util
+import pathlib
+import timeit
+
+ROOT = pathlib.Path(__file__).parent
+MODELS = ["sonnet", "gpt", "composer"]
+
+CASES = [
+    ("空串", "", ""),
+    ("ASCII", "hello", "olleh"),
+    ("中文", "你好，世界", "界世，好你"),
+    ("组合附加符", "ae\u0301b", "be\u0301a"),
+    ("多个附加符", "xe\u0301\u0302y", "ye\u0301\u0302x"),
+    ("ZWJ 家庭", "a👨‍👩‍👧b", "b👨‍👩‍👧a"),
+    ("肤色修饰", "a👍🏽b", "b👍🏽a"),
+    ("ZWJ+肤色", "a👨🏻‍💻b", "b👨🏻‍💻a"),
+    ("彩虹旗(VS16+ZWJ)", "a🏳️‍🌈b", "b🏳️‍🌈a"),
+    ("心形+VS16", "a❤️b", "b❤️a"),
+    ("两面国旗", "🇨🇳🇺🇸", "🇺🇸🇨🇳"),
+    ("国旗+中文", "我🇨🇳好", "好🇨🇳我"),
+    ("键帽 emoji", "a1️⃣b", "b1️⃣a"),
+    ("子区域旗(Tag)", "a🏴󠁧󠁢󠁳󠁣󠁴󠁿b", "b🏴󠁧󠁢󠁳󠁣󠁴󠁿a"),
+    ("CRLF", "a\r\nb", "b\r\na"),
+    ("韩文音节", "한국어", "어국한"),
+    ("韩文 Jamo", "\u1100\u1161\u11a8x", "x\u1100\u1161\u11a8"),
+    ("天城文 SpacingMark", "aकिb", "bकिa"),
+]
+
+
+def load(name):
+    path = ROOT / name / "reverse_string.py"
+    spec = importlib.util.spec_from_file_location(f"rs_{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.reverse_string, path
+
+
+def main():
+    perf_input = ("Hello 你好 👨‍👩‍👧 🇨🇳 e\u0301 👍🏽 " * 500)
+    print(f"{'模型':<10}{'通过':>8}{'行数':>8}{'耗时(ms/次)':>14}  失败用例")
+    for name in MODELS:
+        fn, path = load(name)
+        passed, failed = 0, []
+        for label, src, want in CASES:
+            try:
+                ok = fn(src) == want
+            except Exception as e:  # noqa: BLE001
+                ok = False
+                label += f"({type(e).__name__})"
+            if ok:
+                passed += 1
+            else:
+                failed.append(label)
+        lines = len(path.read_text(encoding="utf-8").splitlines())
+        ms = min(timeit.repeat(lambda: fn(perf_input), number=5, repeat=3)) / 5 * 1000
+        print(f"{name:<10}{passed:>5}/{len(CASES):<2}{lines:>8}{ms:>14.2f}  {', '.join(failed) or '-'}")
+
+
+if __name__ == "__main__":
+    main()
